@@ -62,9 +62,9 @@ type Config struct {
 	EventHook gin.HandlerFunc
 }
 
-type bucket struct {
-	token     int
-	updatedAt time.Time
+type BucketData struct {
+	Token     int
+	UpdatedAt time.Time
 }
 
 type defaultStorage struct {
@@ -119,7 +119,7 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			return
 		}
 		v := conf.Storage.Get(key)
-		b := new(bucket)
+		b := new(BucketData)
 		if v == "" {
 			b = newBucket(conf)
 		}
@@ -129,16 +129,16 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
 			return
 		}
-		if time.Now().After(b.updatedAt.Add(conf.BucketFillDuration)) {
-			b.token = conf.TokenNumber
-			b.updatedAt = time.Now()
+		if time.Now().After(b.UpdatedAt.Add(conf.BucketFillDuration)) {
+			b.Token = conf.TokenNumber
+			b.UpdatedAt = time.Now()
 		}
-		if b.token <= 0 {
+		if b.Token <= 0 {
 			eventHappen(conf, c, EventRejected, nil)
 			c.String(http.StatusTooManyRequests, http.StatusText(http.StatusTooManyRequests))
 			return
 		}
-		b.token--
+		b.Token--
 		bs, err := conf.Serializer.Marshal(b)
 		if err != nil {
 			eventHappen(conf, c, EventError, ErrMarshalError)
@@ -166,9 +166,9 @@ func eventHappen(conf *Config, c *gin.Context, event string, err error) {
 	}
 }
 
-func newBucket(conf *Config) *bucket {
-	return &bucket{
-		token:     conf.TokenNumber,
-		updatedAt: time.Now(),
+func newBucket(conf *Config) *BucketData {
+	return &BucketData{
+		Token:     conf.TokenNumber,
+		UpdatedAt: time.Now(),
 	}
 }
