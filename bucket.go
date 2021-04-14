@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,8 @@ var (
 		TokenNumber:        10,
 		BucketFillDuration: 500 * time.Millisecond,
 	}
+
+	once = new(sync.Once)
 )
 
 type Storage interface {
@@ -69,10 +72,20 @@ type defaultStorage struct {
 }
 
 func (s *defaultStorage) Set(key, val string) {
+	once.Do(func() {
+		if s.m == nil {
+			s.m = cmap.New()
+		}
+	})
 	s.m.Set(key, val)
 }
 
 func (s *defaultStorage) Get(key string) string {
+	once.Do(func() {
+		if s.m == nil {
+			s.m = cmap.New()
+		}
+	})
 	if v, ok := s.m.Get(key); ok {
 		res, _ := v.(string)
 		return res
