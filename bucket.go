@@ -3,9 +3,11 @@ package bucket
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	cmap "github.com/orcaman/concurrent-map"
 )
 
 const (
@@ -20,6 +22,14 @@ var (
 	ErrIpNotFound     = errors.New("ip not found")
 	ErrUnmarshalError = errors.New("unmarshal error")
 	ErrMarshalError   = errors.New("marshal error")
+	ErrLimited        = errors.New("rate limited")
+
+	DefaultConfig = &Config{
+		Storage:            new(defaultStorage),
+		Serializer:         new(defaultSerializer),
+		TokenNumber:        10,
+		BucketFillDuration: 500 * time.Millisecond,
+	}
 )
 
 type Storage interface {
@@ -33,8 +43,8 @@ type Serializer interface {
 }
 
 type Config struct {
+	// Storage, default use concurrent map
 	Storage Storage
-	// TODO:
 
 	// serialization, default use json
 	Serializer Serializer
@@ -54,6 +64,22 @@ type bucket struct {
 	updatedAt time.Time
 }
 
+type defaultStorage struct {
+	m cmap.ConcurrentMap
+}
+
+func (s *defaultStorage) Set(key, val string) {
+	s.m.Set(key, val)
+}
+
+func (s *defaultStorage) Get(key string) string {
+	if v, ok := s.m.Get(key); ok {
+		res, _ := v.(string)
+		return res
+	}
+	return ""
+}
+
 type defaultSerializer struct{}
 
 func (defaultSerializer) Marshal(data interface{}) ([]byte, error) {
@@ -64,7 +90,10 @@ func (defaultSerializer) Unmarshal(bytes []byte, receiver interface{}) error {
 	return json.Unmarshal(bytes, receiver)
 }
 
-// TODO: add default config, use concurrent-map or sync.Map
+func New() gin.HandlerFunc {
+	return Bucket(DefaultConfig)
+}
+
 func Bucket(conf *Config) gin.HandlerFunc {
 	if conf == nil {
 		panic("Bucket: Missing Config")
@@ -75,6 +104,7 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			c.Set(ErrKey, ErrIpNotFound)
 			c.Set(EventKey, EventError)
 			conf.EventHook(c)
+			c.String(http.StatusBadRequest, http.StatusText(http.StatusBadRequest))
 			return
 		}
 		v := conf.Storage.Get(key)
@@ -87,6 +117,7 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			c.Set(ErrKey, ErrUnmarshalError)
 			c.Set(EventKey, EventError)
 			conf.EventHook(c)
+			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
 			return
 		}
 		if time.Now().After(b.updatedAt.Add(conf.BucketFillDuration)) {
@@ -96,6 +127,7 @@ func Bucket(conf *Config) gin.HandlerFunc {
 		if b.token <= 0 {
 			c.Set(EventKey, EventRejected)
 			conf.EventHook(c)
+			c.String(http.StatusTooManyRequests, http.StatusText(http.StatusTooManyRequests))
 			return
 		}
 		b.token--
@@ -104,10 +136,11 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			c.Set(ErrKey, ErrMarshalError)
 			c.Set(EventKey, EventError)
 			conf.EventHook(c)
+			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
 			return
 		}
 		conf.Storage.Set(key, string(bs))
-		conf.Set(EventKey, EventPass)
+		c.Set(EventKey, EventPass)
 		conf.EventHook(c)
 		c.Next()
 	}
