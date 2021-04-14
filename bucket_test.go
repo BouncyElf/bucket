@@ -1,11 +1,39 @@
 package bucket
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
+
+func Test_defaultSerializer(t *testing.T) {
+	now := time.Now()
+	n := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), 0, now.Location())
+	tt := struct {
+		name     string
+		data     *BucketData
+		receiver *BucketData
+	}{
+		name: "happy path(bucket pointer)",
+		data: &BucketData{
+			Token:     10,
+			UpdatedAt: n,
+		},
+		receiver: &BucketData{},
+	}
+
+	assert.NotPanics(t, func() {
+		s := new(defaultSerializer)
+		b, err := s.Marshal(tt.data)
+		assert.NoError(t, err, tt.name)
+		fmt.Println(string(b))
+		assert.NoError(t, s.Unmarshal(b, tt.receiver), tt.name)
+		assert.EqualValues(t, tt.data, tt.receiver, tt.name)
+	}, tt.name)
+}
 
 func Test_defaultStorage(t *testing.T) {
 	tt := struct {
