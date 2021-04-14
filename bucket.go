@@ -114,9 +114,7 @@ func Bucket(conf *Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := c.ClientIP()
 		if key == "" {
-			c.Set(ErrKey, ErrIpNotFound)
-			c.Set(EventKey, EventError)
-			conf.EventHook(c)
+			eventHappen(conf, c, EventError, ErrIpNotFound)
 			c.String(http.StatusBadRequest, http.StatusText(http.StatusBadRequest))
 			return
 		}
@@ -127,9 +125,7 @@ func Bucket(conf *Config) gin.HandlerFunc {
 		}
 		err := conf.Serializer.Unmarshal([]byte(v), b)
 		if err != nil {
-			c.Set(ErrKey, ErrUnmarshalError)
-			c.Set(EventKey, EventError)
-			conf.EventHook(c)
+			eventHappen(conf, c, EventError, ErrUnmarshalError)
 			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
 			return
 		}
@@ -138,24 +134,35 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			b.updatedAt = time.Now()
 		}
 		if b.token <= 0 {
-			c.Set(EventKey, EventRejected)
-			conf.EventHook(c)
+			eventHappen(conf, c, EventRejected, nil)
 			c.String(http.StatusTooManyRequests, http.StatusText(http.StatusTooManyRequests))
 			return
 		}
 		b.token--
 		bs, err := conf.Serializer.Marshal(b)
 		if err != nil {
-			c.Set(ErrKey, ErrMarshalError)
-			c.Set(EventKey, EventError)
-			conf.EventHook(c)
+			eventHappen(conf, c, EventError, ErrMarshalError)
 			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
 			return
 		}
 		conf.Storage.Set(key, string(bs))
-		c.Set(EventKey, EventPass)
-		conf.EventHook(c)
+		eventHappen(conf, c, EventPass, nil)
 		c.Next()
+	}
+}
+
+func eventHappen(conf *Config, c *gin.Context, event string, err error) {
+	if conf == nil {
+		panic("Bucket: Missing Config")
+	}
+	if event != "" {
+		c.Set(EventKey, event)
+	}
+	if err != nil {
+		c.Set(ErrKey, err)
+	}
+	if h := conf.EventHook; h != nil {
+		h(c)
 	}
 }
 

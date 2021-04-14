@@ -1,154 +1,64 @@
 package bucket
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	cmap "github.com/orcaman/concurrent-map"
+	"github.com/stretchr/testify/assert"
 )
 
-func Test_defaultStorage_Set(t *testing.T) {
-	type fields struct {
-		m cmap.ConcurrentMap
-	}
-	type args struct {
-		key string
-		val string
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		args   args
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		s := &defaultStorage{
-			m: tt.fields.m,
-		}
-		s.Set(tt.args.key, tt.args.val)
-	}
-}
-
-func Test_defaultStorage_Get(t *testing.T) {
-	type fields struct {
-		m cmap.ConcurrentMap
-	}
-	type args struct {
-		key string
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		args   args
-		want   string
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		s := &defaultStorage{
-			m: tt.fields.m,
-		}
-		if got := s.Get(tt.args.key); got != tt.want {
-			t.Errorf("%q. defaultStorage.Get() = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-func Test_defaultSerializer_Marshal(t *testing.T) {
-	type args struct {
-		data interface{}
-	}
-	tests := []struct {
+func Test_defaultStorage(t *testing.T) {
+	tt := struct {
 		name    string
-		d       defaultSerializer
-		args    args
-		want    []byte
-		wantErr bool
+		setData map[string]string
+		getData map[string]string
 	}{
-		// TODO: Add test cases.
+		name: "happy path",
+		setData: map[string]string{
+			"k1": "v1",
+		},
+		getData: map[string]string{
+			"k1": "v1",
+			"k":  "",
+			"":   "",
+		},
 	}
-	for _, tt := range tests {
-		d := defaultSerializer{}
-		got, err := d.Marshal(tt.args.data)
-		if (err != nil) != tt.wantErr {
-			t.Errorf("%q. defaultSerializer.Marshal() error = %v, wantErr %v", tt.name, err, tt.wantErr)
-			continue
-		}
-		if !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%q. defaultSerializer.Marshal() = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
 
-func Test_defaultSerializer_Unmarshal(t *testing.T) {
-	type args struct {
-		bytes    []byte
-		receiver interface{}
-	}
-	tests := []struct {
-		name    string
-		d       defaultSerializer
-		args    args
-		wantErr bool
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		d := defaultSerializer{}
-		if err := d.Unmarshal(tt.args.bytes, tt.args.receiver); (err != nil) != tt.wantErr {
-			t.Errorf("%q. defaultSerializer.Unmarshal() error = %v, wantErr %v", tt.name, err, tt.wantErr)
+	s := new(defaultStorage)
+	assert.NotPanics(t, func() {
+		for k, v := range tt.setData {
+			s.Set(k, v)
 		}
-	}
+	}, tt.name)
+	assert.NotPanics(t, func() {
+		for k, v := range tt.getData {
+			assert.Equal(t, v, s.Get(k), tt.name)
+		}
+	}, tt.name)
 }
 
 func TestNew(t *testing.T) {
-	tests := []struct {
-		name string
-		want gin.HandlerFunc
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		if got := New(); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%q. New() = %v, want %v", tt.name, got, tt.want)
-		}
-	}
+	assert.NotPanics(t, func() {
+		New()
+	})
 }
 
-func TestBucket(t *testing.T) {
-	type args struct {
-		conf *Config
-	}
+func Test_eventHappen(t *testing.T) {
 	tests := []struct {
-		name string
-		args args
-		want gin.HandlerFunc
+		name  string
+		conf  *Config
+		c     *gin.Context
+		event string
+		err   error
 	}{
-		// TODO: Add test cases.
+		{
+			name: "happy path(empty)",
+			conf: DefaultConfig,
+		},
 	}
 	for _, tt := range tests {
-		if got := Bucket(tt.args.conf); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%q. Bucket() = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-func Test_newBucket(t *testing.T) {
-	type args struct {
-		conf *Config
-	}
-	tests := []struct {
-		name string
-		args args
-		want *bucket
-	}{
-		// TODO: Add test cases.
-	}
-	for _, tt := range tests {
-		if got := newBucket(tt.args.conf); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%q. newBucket() = %v, want %v", tt.name, got, tt.want)
-		}
+		assert.NotPanics(t, func() {
+			eventHappen(tt.conf, tt.c, tt.event, tt.err)
+		}, tt.name)
 	}
 }
