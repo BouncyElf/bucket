@@ -119,15 +119,14 @@ func Bucket(conf *Config) gin.HandlerFunc {
 			return
 		}
 		v := conf.Storage.Get(key)
-		b := new(BucketData)
-		if v == "" {
-			b = newBucket(conf)
-		}
-		err := conf.Serializer.Unmarshal([]byte(v), b)
-		if err != nil {
-			eventHappen(conf, c, EventError, ErrUnmarshalError)
-			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
-			return
+		b := newBucket(conf)
+		if v != "" {
+			err := conf.Serializer.Unmarshal([]byte(v), b)
+			if err != nil {
+				eventHappen(conf, c, EventError, ErrUnmarshalError)
+				c.AbortWithError(http.StatusInternalServerError, ErrUnmarshalError)
+				return
+			}
 		}
 		if time.Now().After(b.UpdatedAt.Add(conf.BucketFillDuration)) {
 			b.Token = conf.TokenNumber
