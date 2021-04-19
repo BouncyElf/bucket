@@ -81,7 +81,7 @@ func Test_eventHappen(t *testing.T) {
 	}{
 		{
 			name: "happy path(empty)",
-			conf: DefaultConfig,
+			conf: NewDefaultConfig(),
 		},
 	}
 	for _, tt := range tests {

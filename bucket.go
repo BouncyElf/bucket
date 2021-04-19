@@ -25,13 +25,6 @@ var (
 	ErrMarshalError   = errors.New("marshal error")
 	ErrLimited        = errors.New("rate limited")
 
-	DefaultConfig = &Config{
-		Storage:            new(defaultStorage),
-		Serializer:         new(defaultSerializer),
-		TokenNumber:        10,
-		BucketFillDuration: 500 * time.Millisecond,
-	}
-
 	once = new(sync.Once)
 )
 
@@ -104,7 +97,16 @@ func (defaultSerializer) Unmarshal(bytes []byte, receiver interface{}) error {
 }
 
 func New() gin.HandlerFunc {
-	return Bucket(DefaultConfig)
+	return Bucket(NewDefaultConfig())
+}
+
+func NewDefaultConfig() *Config {
+	return &Config{
+		Storage:            new(defaultStorage),
+		Serializer:         new(defaultSerializer),
+		TokenNumber:        10,
+		BucketFillDuration: 500 * time.Millisecond,
+	}
 }
 
 func Bucket(conf *Config) gin.HandlerFunc {
