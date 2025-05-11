@@ -1,10 +1,11 @@
 package bucket
 
 import (
-	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,164 +13,144 @@ import (
 )
 
 const (
-	ErrKey        = "bucket.error.key"
-	EventKey      = "bucket.event.key"
-	EventError    = "bucket.event.error"
-	EventRejected = "bucket.event.reject"
-	EventPass     = "bucket.event.pass"
+	BucketEventKey       = "bucket.event.key"
+	EventPass      Event = iota
+	EventRejected
+	EventIPNotFound
 )
 
 var (
-	ErrIpNotFound     = errors.New("ip not found")
-	ErrUnmarshalError = errors.New("unmarshal error")
-	ErrMarshalError   = errors.New("marshal error")
-	ErrLimited        = errors.New("rate limited")
-
-	once = new(sync.Once)
+	ErrInvalidTokenNumber     = wrapErr(errors.New("invalid token number"))
+	ErrRefillIntervalTooSmall = wrapErr(errors.New("refill interval too small"))
 )
 
-type Storage interface {
-	Set(key, val string)
-	Get(key string) (val string)
-}
+type Event int
 
-type Serializer interface {
-	Marshal(data interface{}) ([]byte, error)
-	Unmarshal(data []byte, receiver interface{}) error
+type AtomicBucket struct {
+	token     int64 // atomic
+	updatedAt int64 // UnixNano
 }
 
 type Config struct {
-	// Storage, default use concurrent map
-	Storage Storage
-
-	// serialization, default use json
-	Serializer Serializer
-
-	// TokenNumber token number per bucket
-	TokenNumber int
-
-	// BucketFillDuration bucket fill duration
-	BucketFillDuration time.Duration
-
-	// EventHook is the hook after error or rejected
-	EventHook gin.HandlerFunc
+	Storage           Storage
+	TokenNumber       int64
+	RefillMicrosecond int64 // 微秒级精度
+	EventHook         gin.HandlerFunc
+	WeakRejectionMode bool
 }
 
-type BucketData struct {
-	Token     int
-	UpdatedAt time.Time
+type Storage interface {
+	GetOrCreate(key string, creator func() *AtomicBucket) *AtomicBucket
 }
 
 type defaultStorage struct {
-	m cmap.ConcurrentMap
+	m  cmap.ConcurrentMap
+	mu sync.Mutex
 }
 
-func (s *defaultStorage) Set(key, val string) {
-	once.Do(func() {
-		if s.m == nil {
-			s.m = cmap.New()
-		}
-	})
-	s.m.Set(key, val)
-}
-
-func (s *defaultStorage) Get(key string) string {
-	once.Do(func() {
-		if s.m == nil {
-			s.m = cmap.New()
-		}
-	})
+func (s *defaultStorage) GetOrCreate(key string, creator func() *AtomicBucket) *AtomicBucket {
 	if v, ok := s.m.Get(key); ok {
-		res, _ := v.(string)
-		return res
+		return v.(*AtomicBucket)
 	}
-	return ""
-}
 
-type defaultSerializer struct{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.m.Get(key); ok {
+		return v.(*AtomicBucket)
+	}
 
-func (defaultSerializer) Marshal(data interface{}) ([]byte, error) {
-	return json.Marshal(data)
-}
-
-func (defaultSerializer) Unmarshal(bytes []byte, receiver interface{}) error {
-	return json.Unmarshal(bytes, receiver)
-}
-
-func New() gin.HandlerFunc {
-	return Bucket(NewDefaultConfig())
+	b := creator()
+	s.m.Set(key, b)
+	return b
 }
 
 func NewDefaultConfig() *Config {
 	return &Config{
-		Storage:            new(defaultStorage),
-		Serializer:         new(defaultSerializer),
-		TokenNumber:        10,
-		BucketFillDuration: 500 * time.Millisecond,
+		Storage: &defaultStorage{
+			m: cmap.New(),
+		},
+		TokenNumber:       10000,
+		RefillMicrosecond: 100, // 100μs补充1个token
 	}
 }
 
-func Bucket(conf *Config) gin.HandlerFunc {
-	if conf == nil {
-		panic("Bucket: Missing Config")
+func (conf *Config) Valid() error {
+	if conf.TokenNumber < 1 {
+		return ErrInvalidTokenNumber
 	}
+	if conf.RefillMicrosecond < 10 { // 最小10μs间隔
+		return ErrRefillIntervalTooSmall
+	}
+	return nil
+}
+
+func BucketHandler(conf *Config) gin.HandlerFunc {
+	if err := conf.Valid(); err != nil {
+		panic(err)
+	}
+
 	return func(c *gin.Context) {
 		key := c.ClientIP()
 		if key == "" {
-			eventHappen(conf, c, EventError, ErrIpNotFound)
-			c.String(http.StatusBadRequest, http.StatusText(http.StatusBadRequest))
-			return
-		}
-		v := conf.Storage.Get(key)
-		b := newBucket(conf)
-		if v != "" {
-			err := conf.Serializer.Unmarshal([]byte(v), b)
-			if err != nil {
-				eventHappen(conf, c, EventError, ErrUnmarshalError)
-				c.AbortWithError(http.StatusInternalServerError, ErrUnmarshalError)
+			handleEvent(conf, c, EventIPNotFound)
+			if conf.WeakRejectionMode {
+				c.Next()
 				return
 			}
-		}
-		if time.Now().After(b.UpdatedAt.Add(conf.BucketFillDuration)) {
-			b.Token = conf.TokenNumber
-			b.UpdatedAt = time.Now()
-		}
-		if b.Token <= 0 {
-			eventHappen(conf, c, EventRejected, nil)
-			c.String(http.StatusTooManyRequests, http.StatusText(http.StatusTooManyRequests))
+			c.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		b.Token--
-		bs, err := conf.Serializer.Marshal(b)
-		if err != nil {
-			eventHappen(conf, c, EventError, ErrMarshalError)
-			c.AbortWithError(http.StatusInternalServerError, ErrMarshalError)
+
+		bucket := conf.Storage.GetOrCreate(key, func() *AtomicBucket {
+			return newBucket(conf)
+		})
+
+		now := time.Now().UnixNano()
+		oldUpdated := atomic.LoadInt64(&bucket.updatedAt)
+		elapsed := now - oldUpdated
+
+		refillNanos := conf.RefillMicrosecond * 1000
+		tokensToAdd := elapsed / refillNanos
+		if tokensToAdd > 0 {
+			newToken := atomic.AddInt64(&bucket.token, tokensToAdd)
+			if newToken > conf.TokenNumber {
+				atomic.StoreInt64(&bucket.token, conf.TokenNumber)
+			}
+			atomic.StoreInt64(&bucket.updatedAt, now)
+		}
+
+		if atomic.AddInt64(&bucket.token, -1) < 0 {
+			atomic.AddInt64(&bucket.token, 1) // 回滚
+			handleEvent(conf, c, EventRejected)
+			c.AbortWithStatus(http.StatusTooManyRequests)
 			return
 		}
-		conf.Storage.Set(key, string(bs))
-		eventHappen(conf, c, EventPass, nil)
+
+		handleEvent(conf, c, EventPass)
 		c.Next()
 	}
 }
 
-func eventHappen(conf *Config, c *gin.Context, event string, err error) {
+func newBucket(conf *Config) *AtomicBucket {
 	if conf == nil {
-		panic("Bucket: Missing Config")
+		return nil
 	}
-	if event != "" {
-		c.Set(EventKey, event)
-	}
-	if err != nil {
-		c.Set(ErrKey, err)
-	}
-	if h := conf.EventHook; h != nil {
-		h(c)
+	return &AtomicBucket{
+		token:     conf.TokenNumber,
+		updatedAt: time.Now().UnixNano(),
 	}
 }
 
-func newBucket(conf *Config) *BucketData {
-	return &BucketData{
-		Token:     conf.TokenNumber,
-		UpdatedAt: time.Now(),
+func handleEvent(conf *Config, c *gin.Context, e Event) {
+	c.Set(BucketEventKey, e)
+	if conf.EventHook != nil {
+		conf.EventHook(c)
 	}
+}
+
+func wrapErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("bucket err: %v", err)
 }

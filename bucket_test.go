@@ -1,7 +1,9 @@
 package bucket
 
 import (
-	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,84 +11,81 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_defaultSerializer(t *testing.T) {
-	now := time.Now()
-	n := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), 0, now.Location())
-	tt := struct {
-		name     string
-		data     *BucketData
-		receiver *BucketData
-	}{
-		name: "happy path(bucket pointer)",
-		data: &BucketData{
-			Token:     10,
-			UpdatedAt: n,
-		},
-		receiver: &BucketData{},
-	}
+func BenchmarkRateLimiter(b *testing.B) {
+	conf := NewDefaultConfig()
+	conf.TokenNumber = 10000
+	router := gin.New()
+	router.Use(BucketHandler(conf))
 
-	assert.NotPanics(t, func() {
-		s := new(defaultSerializer)
-		b, err := s.Marshal(tt.data)
-		assert.NoError(t, err, tt.name)
-		fmt.Println(string(b))
-		assert.NoError(t, s.Unmarshal(b, tt.receiver), tt.name)
-		assert.EqualValues(t, tt.data, tt.receiver, tt.name)
-	}, tt.name)
-}
-
-func Test_defaultStorage(t *testing.T) {
-	tt := struct {
-		name    string
-		setData map[string]string
-		getData map[string]string
-	}{
-		name: "happy path",
-		setData: map[string]string{
-			"k1": "v1",
-		},
-		getData: map[string]string{
-			"k1": "v1",
-			"k":  "",
-			"":   "",
-		},
-	}
-
-	s := new(defaultStorage)
-	assert.NotPanics(t, func() {
-		for k, v := range tt.setData {
-			s.Set(k, v)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", "/", nil)
+			req.RemoteAddr = "192.168.1.1:8080" // 固定IP
+			router.ServeHTTP(w, req)
 		}
-	}, tt.name)
-	assert.NotPanics(t, func() {
-		for k, v := range tt.getData {
-			assert.Equal(t, v, s.Get(k), tt.name)
-		}
-	}, tt.name)
-}
-
-func TestNew(t *testing.T) {
-	assert.NotPanics(t, func() {
-		New()
 	})
 }
 
-func Test_eventHappen(t *testing.T) {
-	tests := []struct {
-		name  string
-		conf  *Config
-		c     *gin.Context
-		event string
-		err   error
-	}{
-		{
-			name: "happy path(empty)",
-			conf: NewDefaultConfig(),
-		},
-	}
-	for _, tt := range tests {
-		assert.NotPanics(t, func() {
-			eventHappen(tt.conf, tt.c, tt.event, tt.err)
-		}, tt.name)
-	}
+func TestAtomicBucket(t *testing.T) {
+	conf := NewDefaultConfig()
+	key := "test_ip"
+
+	bucket := conf.Storage.GetOrCreate(key, func() *AtomicBucket {
+		return &AtomicBucket{
+			token:     conf.TokenNumber,
+			updatedAt: time.Now().UnixNano(),
+		}
+	})
+
+	t.Run("normal consume", func(t *testing.T) {
+
+		// 首次消费应成功
+		if atomic.AddInt64(&bucket.token, -1) < 0 {
+			t.Fatal("正常消费失败")
+		}
+	})
+
+	t.Run("rate limiting", func(t *testing.T) {
+		// 耗尽令牌
+		for i := int64(0); i < conf.TokenNumber; i++ {
+			atomic.AddInt64(&bucket.token, -1)
+		}
+
+		// 应触发限流
+		if atomic.AddInt64(&bucket.token, -1) >= 0 {
+			t.Fatal("限流未生效")
+		}
+	})
+}
+
+func TestHTTPMiddleware(t *testing.T) {
+	conf := NewDefaultConfig()
+	conf.TokenNumber = 10
+	// 10s
+	conf.RefillMicrosecond = 10000000
+	router := gin.New()
+	router.GET("/api", BucketHandler(conf), func(c *gin.Context) {
+		c.String(200, "ok")
+	})
+
+	t.Run("single IP", func(t *testing.T) {
+		// 模拟合法请求
+		for i := 0; int64(i) < conf.TokenNumber; i++ {
+			w := performRequest(router, "GET", "/api", "192.168.1.1")
+			assert.Equal(t, 200, w.Code)
+		}
+
+		// 触发限流
+		w := performRequest(router, "GET", "/api", "192.168.1.1")
+		assert.Equal(t, 429, w.Code)
+	})
+}
+
+func performRequest(r http.Handler, method, path, ip string) *httptest.ResponseRecorder {
+	req, _ := http.NewRequest(method, path, nil)
+	req.RemoteAddr = ip + ":8080"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
 }
