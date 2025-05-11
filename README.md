@@ -109,3 +109,7 @@ PRs welcome! Please ensure:
 1. Add test coverage for new features
 2. Update documentation accordingly
 3. Maintain 100% atomic operation safety
+
+# LICENSE
+MIT LICENSE
+Copyright (c) 2025 BouncyElf

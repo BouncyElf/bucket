@@ -1,3 +1,6 @@
+// Copyright (c) 2025 BouncyElf
+// SPDX-License-Identifier: MIT
+
 package bucket
 
 import (
